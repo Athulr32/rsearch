@@ -1,4 +1,5 @@
 use html_parser::Dom;
+use scraper::{Html, Selector};
 use std::{collections::HashMap, fs, path::Iter};
 
 //This should iterate through the string then tokenise each part
@@ -81,7 +82,7 @@ type WordsFreq = HashMap<String, usize>;
 type DocWordsFreq = HashMap<String, WordsFreq>;
 
 fn main() {
-    let search = "The word example is more interesting";
+    let search = "cdk layout";
     let dir_path = "/Users/athul/Programming/rsearch/files";
     let file_dir = fs::read_dir(dir_path).unwrap();
 
@@ -91,7 +92,20 @@ fn main() {
     for file in file_dir {
         let file_path = file.unwrap().path();
         let file_string = fs::read_to_string(file_path.clone()).unwrap();
-        let char_arr = file_string.chars().collect::<Vec<char>>();
+
+        let document = Html::parse_document(&file_string);
+
+        // Create a selector for all text nodes
+        let selector = Selector::parse("body").expect("Failed to create selector");
+
+        let mut html_extracted_content = String::new();
+        // Extract and print all text content
+        for element in document.select(&selector) {
+            let text = element.text().collect::<Vec<_>>().join(" ");
+            html_extracted_content = html_extracted_content + &text
+        }
+
+        let char_arr = html_extracted_content.chars().collect::<Vec<char>>();
         let lexer = Lexer::new(&char_arr);
 
         let mut words_count: WordsFreq = HashMap::new();
@@ -108,6 +122,7 @@ fn main() {
         }
         let path_as_string = file_path.to_str().unwrap().to_string();
         file_words_map.insert(path_as_string, words_count);
+        
     }
 
     let search_arr = search.chars().collect::<Vec<char>>();
@@ -128,7 +143,18 @@ fn main() {
         rank.insert(doc.to_string(), total_tf);
     }
 
-    println!("{:?}", rank);
+    
+
+    // Convert the HashMap to a Vec of tuples
+    let mut sorted: Vec<_> = rank.into_iter().collect();
+
+    // Sort the Vec by value (second element of the tuple)
+    sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+    // Print the sorted result
+    for (key, value) in sorted {
+        println!("{}: {}", key, value);
+    }
 
     //Search
 }
