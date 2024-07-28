@@ -1,7 +1,7 @@
-use html_parser::Dom;
+use rocksdb::{IteratorMode, Options, DB};
 use scraper::{Html, Selector};
-use std::{collections::HashMap, fs, path::Iter};
-
+use std::fs::{self, DirEntry};
+use std::{collections::HashMap, ffi::OsStr, path::Path};
 //This should iterate through the string then tokenise each part
 // And bark the tokens out
 struct Lexer<'a> {
@@ -82,49 +82,32 @@ type WordsFreq = HashMap<String, usize>;
 type DocWordsFreq = HashMap<String, WordsFreq>;
 
 fn main() {
-    let search = "cdk layout";
-    let dir_path = "/Users/athul/Programming/rsearch/files";
-    let file_dir = fs::read_dir(dir_path).unwrap();
+    let search = "GEET GARG";
+    let dir_path = Path::new("/Users/athul/Downloads");
 
     let mut file_words_map: DocWordsFreq = HashMap::new();
 
-    //Indexing Files
-    for file in file_dir {
-        let file_path = file.unwrap().path();
-        let file_string = fs::read_to_string(file_path.clone()).unwrap();
+    //Visit all Directories and Index the files
+    visit_dirs(dir_path, &tokenize_file_content).unwrap();
 
-        let document = Html::parse_document(&file_string);
+    // Read Data from RocksDb
+    let path = "./rocksdb";
+    let db = DB::open_default(path).unwrap();
 
-        // Create a selector for all text nodes
-        let selector = Selector::parse("body").expect("Failed to create selector");
+    // Create an iterator
+    let iter = db.iterator(IteratorMode::Start);
 
-        let mut html_extracted_content = String::new();
-        // Extract and print all text content
-        for element in document.select(&selector) {
-            let text = element.text().collect::<Vec<_>>().join(" ");
-            html_extracted_content = html_extracted_content + &text
-        }
-
-        let char_arr = html_extracted_content.chars().collect::<Vec<char>>();
-        let lexer = Lexer::new(&char_arr);
-
-        let mut words_count: WordsFreq = HashMap::new();
-
-        for token in lexer {
-            let foo: String = token.into_iter().collect();
-            let count = words_count.get(&foo);
-            if let Some(c) = count {
-                let total_count = c + 1;
-                words_count.insert(foo, total_count);
-            } else {
-                words_count.insert(foo, 1);
+    for item in iter {
+        match item {
+            Ok((key, value)) => {
+                let path = String::from_utf8_lossy(&key);
+                let value = serde_json::from_slice::<WordsFreq>(&value).unwrap();
+                println!("{:?}", value);
+                file_words_map.insert(path.to_string(), value);
             }
+            Err(_) => {}
         }
-        let path_as_string = file_path.to_str().unwrap().to_string();
-        file_words_map.insert(path_as_string, words_count);
-        
     }
-
     let search_arr = search.chars().collect::<Vec<char>>();
 
     let mut rank: HashMap<String, f64> = HashMap::new();
@@ -136,20 +119,16 @@ fn main() {
         let lexer = Lexer::new(&search_arr);
         for token in lexer {
             let foo: String = token.into_iter().collect();
-            let tf = calculate_tf(&foo, term_freq) * calculate_idf(&foo, &file_words_map);
+            let tf: f64 = calculate_tf(&foo, term_freq) * calculate_idf(&foo, &file_words_map);
             total_tf += tf;
         }
-
         rank.insert(doc.to_string(), total_tf);
     }
-
-    
 
     // Convert the HashMap to a Vec of tuples
     let mut sorted: Vec<_> = rank.into_iter().collect();
 
     // Sort the Vec by value (second element of the tuple)
-    sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
 
     // Print the sorted result
     for (key, value) in sorted {
@@ -174,4 +153,89 @@ fn calculate_idf(term: &str, term_feq_index: &DocWordsFreq) -> f64 {
         .count()
         + 1) as f64;
     (total_docs / total_docs_term_appears).log10()
+}
+
+fn get_extension_from_filename(filename: &str) -> Option<&str> {
+    Path::new(filename).extension().and_then(OsStr::to_str)
+}
+
+fn visit_dirs(dir: &Path, cb: &dyn Fn(&DirEntry)) -> std::io::Result<()> {
+    if dir.is_dir() {
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                visit_dirs(&path, cb)?;
+            } else {
+                cb(&entry);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn tokenize_file_content(dir: &DirEntry) {
+    let file_path = dir.path();
+    let file_extension = get_extension_from_filename(file_path.to_str().unwrap());
+    if file_extension.is_none() {
+        return;
+    }
+    let file_extension = file_extension.unwrap();
+    let mut content = String::new();
+    if file_extension == "html" {
+        println!("Found HTML");
+        let file_string = fs::read_to_string(file_path.clone()).unwrap();
+
+        let document = Html::parse_document(&file_string);
+
+        // Create a selector for all text nodes
+        let selector = Selector::parse("body").expect("Failed to create selector");
+
+        // Extract and print all text content
+        for element in document.select(&selector) {
+            let text = element.text().collect::<Vec<_>>().join(" ");
+            content = content + &text
+        }
+    } else if file_extension == "pdf" {
+        println!("Found PDF {:?}", file_path.to_str());
+        let extract_pdf = pdf_extract::extract_text(file_path.clone());
+        match extract_pdf {
+            Ok(extracted_content) => content = extracted_content,
+            Err(_) => {
+                return;
+            }
+        }
+    } else {
+        println!("Found Something Else");
+        return;
+    }
+    if content.len() == 0 {
+        return;
+    }
+    let char_arr = content.chars().collect::<Vec<char>>();
+    let lexer = Lexer::new(&char_arr);
+
+    let mut words_count: WordsFreq = HashMap::new();
+
+    for token in lexer {
+        let foo: String = token.into_iter().collect();
+        let count = words_count.get(&foo);
+        if let Some(c) = count {
+            let total_count = c + 1;
+            words_count.insert(foo, total_count);
+        } else {
+            words_count.insert(foo, 1);
+        }
+    }
+
+    if words_count.len() == 0 {
+        return;
+    }
+
+    //Store In DB
+    let path = "./rocksdb";
+    let db = DB::open_default(path).unwrap();
+    let serialise_term_freq = serde_json::to_string(&words_count).unwrap();
+    db.put(file_path.to_str().unwrap(), serialise_term_freq)
+        .unwrap();
 }
