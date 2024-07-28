@@ -1,11 +1,19 @@
 use rocksdb::{IteratorMode, Options, DB};
 use scraper::{Html, Selector};
-use std::fs::{self, DirEntry};
+use std::fs::{self, DirEntry, File};
+use std::io::{Read, Seek, SeekFrom};
+use std::path::PathBuf;
 use std::{collections::HashMap, ffi::OsStr, path::Path};
 //This should iterate through the string then tokenise each part
 // And bark the tokens out
 struct Lexer<'a> {
     content: &'a [char], // Will store the pointer to the current starting letter of the string to the end
+}
+
+enum FileExtension {
+    PDF,
+    HTML,
+    XML,
 }
 
 impl<'a> Lexer<'a> {
@@ -83,7 +91,7 @@ type DocWordsFreq = HashMap<String, WordsFreq>;
 
 fn main() {
     let search = "GEET GARG";
-    let dir_path = Path::new("/Users/athul/Downloads");
+    let dir_path = Path::new("/Users/athul/");
 
     let mut file_words_map: DocWordsFreq = HashMap::new();
 
@@ -155,8 +163,31 @@ fn calculate_idf(term: &str, term_feq_index: &DocWordsFreq) -> f64 {
     (total_docs / total_docs_term_appears).log10()
 }
 
-fn get_extension_from_filename(filename: &str) -> Option<&str> {
-    Path::new(filename).extension().and_then(OsStr::to_str)
+fn get_file_extension(filename: &str) -> Option<FileExtension> {
+    //Check the signature
+    let file = File::open(filename);
+    if file.is_err() {
+        return None;
+    }
+
+    let mut file_open = file.unwrap();
+    let mut buffer = [0u8; 4];
+    let read = file_open
+        .read_exact(&mut buffer)
+        .map_err(|e| println!("Failed to Read Bytes"));
+
+    if read.is_err() {
+        return None;
+    }
+    file_open.seek(SeekFrom::Start(0)).unwrap(); // Reset file pointer
+
+    match &buffer {
+        b"%PDF" => Some(FileExtension::PDF),
+        b"<xml" | b"<?xm" => Some(FileExtension::XML),
+        b"<htm" => Some(FileExtension::HTML),
+        // Add more signatures here
+        _ => None,
+    }
 }
 
 fn visit_dirs(dir: &Path, cb: &dyn Fn(&DirEntry)) -> std::io::Result<()> {
@@ -176,39 +207,35 @@ fn visit_dirs(dir: &Path, cb: &dyn Fn(&DirEntry)) -> std::io::Result<()> {
 
 fn tokenize_file_content(dir: &DirEntry) {
     let file_path = dir.path();
-    let file_extension = get_extension_from_filename(file_path.to_str().unwrap());
+
+    let file_extension = get_file_extension(file_path.to_str().unwrap());
     if file_extension.is_none() {
         return;
     }
     let file_extension = file_extension.unwrap();
     let mut content = String::new();
-    if file_extension == "html" {
-        println!("Found HTML");
-        let file_string = fs::read_to_string(file_path.clone()).unwrap();
 
-        let document = Html::parse_document(&file_string);
-
-        // Create a selector for all text nodes
-        let selector = Selector::parse("body").expect("Failed to create selector");
-
-        // Extract and print all text content
-        for element in document.select(&selector) {
-            let text = element.text().collect::<Vec<_>>().join(" ");
-            content = content + &text
+    match file_extension {
+        FileExtension::HTML => {
+            println!("Found HTML");
+            content = parse_html(file_path.clone());
         }
-    } else if file_extension == "pdf" {
-        println!("Found PDF {:?}", file_path.to_str());
-        let extract_pdf = pdf_extract::extract_text(file_path.clone());
-        match extract_pdf {
-            Ok(extracted_content) => content = extracted_content,
-            Err(_) => {
-                return;
+        FileExtension::PDF => {
+            println!("Found PDF {:?}", file_path.to_str());
+            let extract_pdf = pdf_extract::extract_text(file_path.clone());
+            match extract_pdf {
+                Ok(extracted_content) => content = extracted_content,
+                Err(_) => {
+                    return;
+                }
             }
         }
-    } else {
-        println!("Found Something Else");
-        return;
+        FileExtension::XML => {
+            println!("Found Something Else");
+            return;
+        }
     }
+
     if content.len() == 0 {
         return;
     }
@@ -238,4 +265,27 @@ fn tokenize_file_content(dir: &DirEntry) {
     let serialise_term_freq = serde_json::to_string(&words_count).unwrap();
     db.put(file_path.to_str().unwrap(), serialise_term_freq)
         .unwrap();
+}
+
+fn parse_html(file_path: PathBuf) -> String {
+    let file_string = fs::read_to_string(file_path).unwrap();
+    let mut content = String::new();
+    let document = Html::parse_document(&file_string);
+
+    // Create a selector for all text nodes
+    let selector = Selector::parse("body").expect("Failed to create selector");
+
+    // Extract and print all text content
+    for element in document.select(&selector) {
+        let text = element.text().collect::<Vec<_>>().join(" ");
+        content = content + &text
+    }
+
+    return content;
+}
+
+fn parse_pdf(file_path: PathBuf) -> String {
+    let content = String::new();
+
+    return content;
 }
