@@ -1,9 +1,12 @@
+use lopdf::{Document, Object};
 use rocksdb::{IteratorMode, Options, DB};
 use scraper::{Html, Selector};
 use std::fs::{self, DirEntry, File};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::{collections::HashMap, ffi::OsStr, path::Path};
+use unicode_normalization::UnicodeNormalization;
+
 //This should iterate through the string then tokenise each part
 // And bark the tokens out
 struct Lexer<'a> {
@@ -90,13 +93,15 @@ type WordsFreq = HashMap<String, usize>;
 type DocWordsFreq = HashMap<String, WordsFreq>;
 
 fn main() {
-    let search = "GEET GARG";
+    let search = "Convocation";
     let dir_path = Path::new("/Users/athul/");
 
     let mut file_words_map: DocWordsFreq = HashMap::new();
 
     //Visit all Directories and Index the files
-    visit_dirs(dir_path, &tokenize_file_content).unwrap();
+    let _ = visit_dirs(dir_path, &tokenize_file_content).map_err(|e| {
+        println!("{e}");
+    });
 
     // Read Data from RocksDb
     let path = "./rocksdb";
@@ -222,13 +227,7 @@ fn tokenize_file_content(dir: &DirEntry) {
         }
         FileExtension::PDF => {
             println!("Found PDF {:?}", file_path.to_str());
-            let extract_pdf = pdf_extract::extract_text(file_path.clone());
-            match extract_pdf {
-                Ok(extracted_content) => content = extracted_content,
-                Err(_) => {
-                    return;
-                }
-            }
+            content = parse_pdf(file_path.clone());
         }
         FileExtension::XML => {
             println!("Found Something Else");
@@ -286,6 +285,52 @@ fn parse_html(file_path: PathBuf) -> String {
 
 fn parse_pdf(file_path: PathBuf) -> String {
     let content = String::new();
+    // Load the PDF document
+    let doc = Document::load(file_path).unwrap();
 
+    // Extract text from all pages
+    let mut text = String::new();
+    for (page_number, page_id) in doc.get_pages().iter() {
+        let page = doc.get_page_content(*page_id).unwrap();
+        let resources = doc.get_page_resources(*page_id);
+
+        let content = lopdf::content::Content::decode(&page).unwrap();
+        let extracted_text = content
+            .operations
+            .iter()
+            .filter_map(|operation| match operation.operator.as_ref() {
+                "Tj" | "TJ" => Some(
+                    operation
+                        .operands
+                        .iter()
+                        .map(|operand| extract_text_from_object(operand))
+                        .collect::<Vec<_>>()
+                        .concat(),
+                ),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .concat();
+
+        text.push_str(&extracted_text);
+    }
+
+    // Normalize the text
+    let normalized_text = text.nfc().collect::<String>();
+
+    // Replace ligature 'ﬀ' with 'ff'
+    let corrected_text = normalized_text.replace("ﬀ", "ff");
     return content;
+}
+
+fn extract_text_from_object(object: &Object) -> String {
+    match object {
+        Object::String(ref bytes, _) => String::from_utf8_lossy(&bytes).into_owned(),
+        Object::Array(ref array) => array
+            .iter()
+            .map(|obj| extract_text_from_object(obj))
+            .collect::<Vec<_>>()
+            .concat(),
+        _ => String::new(),
+    }
 }
